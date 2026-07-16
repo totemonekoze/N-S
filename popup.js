@@ -73,10 +73,12 @@ async function showProductMode(direction) {
   productSection.hidden = false;
   heading.textContent = 'N/S';
   try {
+    const sourceProduct = await readOpenProduct(direction);
     const result = await chrome.runtime.sendMessage({
       type: 'LOOKUP_COUNTERPART_PRODUCT',
       direction,
-      sourceUrl: activeTab.url
+      sourceUrl: activeTab.url,
+      sourceProduct
     });
     if (!result?.ok || !result.counterpart?.url) throw new Error(result?.error || '見つかりませんでした。');
     counterpartUrl = result.counterpart.url;
@@ -88,6 +90,16 @@ async function showProductMode(direction) {
     productStatus.hidden = true;
   } catch (error) {
     productStatus.textContent = error.message || '見つかりませんでした。';
+  }
+}
+
+async function readOpenProduct(direction) {
+  const type = direction === 'steam-to-nintendo' ? 'STEAM_PRODUCT' : 'NINTENDO_PRODUCT';
+  try {
+    return await chrome.tabs.sendMessage(activeTab.id, { type });
+  } catch {
+    // 既存タブにコンテンツスクリプトがない場合は、バックグラウンド側で従来どおり再取得する。
+    return null;
   }
 }
 

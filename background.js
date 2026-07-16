@@ -185,7 +185,9 @@ async function lookupCounterpartProduct(message) {
   return withDedicatedWorker(async (job) => {
     if (message.direction === 'steam-to-nintendo') {
       if (!sourceUrl.startsWith('https://store.steampowered.com/app/')) throw new Error('Steamの商品ページを取得できませんでした。');
-      const source = await openAndRead(sourceUrl, { type: 'STEAM_PRODUCT' }, job);
+      const source = hasSteamProductTitle(message.sourceProduct)
+        ? message.sourceProduct
+        : await openAndRead(sourceUrl, { type: 'STEAM_PRODUCT' }, job);
       if (!source?.steamTitle) throw new Error('Steamの商品情報を取得できませんでした。');
       const result = await enrichNintendoDetails(await findNintendoProduct({
         title: source.steamTitle,
@@ -198,7 +200,9 @@ async function lookupCounterpartProduct(message) {
 
     if (message.direction === 'nintendo-to-steam') {
       if (!sourceUrl.startsWith(NINTENDO_ORIGIN)) throw new Error('Nintendo Storeの商品ページを取得できませんでした。');
-      const source = await openAndRead(sourceUrl, { type: 'NINTENDO_PRODUCT' }, job);
+      const source = hasNintendoProductTitle(message.sourceProduct)
+        ? message.sourceProduct
+        : await openAndRead(sourceUrl, { type: 'NINTENDO_PRODUCT' }, job);
       if (!source?.title) throw new Error('Nintendo Storeの商品情報を取得できませんでした。');
       const result = await enrichSteamDetails(await findSteamProduct({
         title: source.title,
@@ -209,6 +213,14 @@ async function lookupCounterpartProduct(message) {
     }
     throw new Error('検索方向を判定できませんでした。');
   });
+}
+
+function hasSteamProductTitle(product) {
+  return Boolean(String(product?.steamTitle || '').trim());
+}
+
+function hasNintendoProductTitle(product) {
+  return Boolean(String(product?.title || '').trim());
 }
 
 async function openCartTab(url, originWindowId) {
@@ -332,26 +344,43 @@ async function findSteamProduct(game, job) {
   const productId = String(game.nintendoProductUrl || game.nintendoUrl || '').match(/(D\d+)/i)?.[1]?.toUpperCase();
   const directMatch = productId && NINTENDO_TO_STEAM_PRODUCT_ALIASES.get(productId);
   if (directMatch) return { ...directMatch, matchScore: 100 };
+  let firstSearchFallback = null;
+  let excludedOnlyResult = false;
   for (const plan of createSteamSearchPlans(game)) {
     const search = await openAndRead(createSteamSearchUrl(plan.query), { type: 'STEAM_SEARCH' }, job);
     const allCandidates = search.candidates || [];
     const candidates = allCandidates.filter((item) => !isSteamExcluded(item.title));
+    if (!firstSearchFallback && candidates.length) firstSearchFallback = candidates[0];
     const candidate = selectCandidate(candidates, game, plan);
     if (candidate && isAcceptedCandidate(candidate, candidates, plan)) {
-      return {
-        title: candidate.title,
-        steamAppId: candidate.steamAppId,
-        steamUrl: candidate.url,
-        steamImage: candidate.image,
-        steamPrice: candidate.price,
-        matchScore: candidate.score
-      };
+      return steamMatchFromCandidate(candidate);
+    }
+    // 最優先の正規化済み検索語で結果が出た場合は、後続の表記ゆれ検索を待たずに
+    // 先頭候補を採用する。先頭候補を使うフォールバック仕様を即時化して高速化する。
+    if (plan.immediateFallback && candidates.length) {
+      return steamMatchFromCandidate(candidates[0], { fallback: true });
     }
     if (allCandidates.length && !candidates.length) {
-      throw new Error('Steamのバンドルまたはサウンドトラックは対象外です。');
+      excludedOnlyResult = true;
     }
   }
+  // Nintendo側の表記から各種の正規化・読み仮名展開を行っても一致しない場合は、
+  // 実際に表示されたSteam検索結果の先頭ゲームを採用する。
+  if (firstSearchFallback) return steamMatchFromCandidate(firstSearchFallback, { fallback: true });
+  if (excludedOnlyResult) throw new Error('Steamのバンドルまたはサウンドトラックは対象外です。');
   throw new Error('見つかりませんでした');
+}
+
+function steamMatchFromCandidate(candidate, options = {}) {
+  return {
+    title: candidate.title,
+    steamAppId: candidate.steamAppId,
+    steamUrl: candidate.url,
+    steamImage: candidate.image,
+    steamPrice: candidate.price,
+    matchScore: options.fallback ? 1 : candidate.score,
+    fallbackMatch: Boolean(options.fallback)
+  };
 }
 
 async function findSteamProductWithSourceFallback(game, job) {
@@ -391,13 +420,17 @@ async function resolveNintendoSourceGame(game, job) {
 function createSteamSearchPlans(game) {
   const title = String(game.title || '').trim();
   const plans = [];
-  const addPlan = (query, minimumScore = 70, allowTopResult = false, source = 'title') => {
+  const addPlan = (query, minimumScore = 70, allowTopResult = false, source = 'title', immediateFallback = false) => {
     const cleanQuery = String(query || '').trim();
     if (!cleanQuery || plans.some((plan) => normaliseTitle(plan.query) === normaliseTitle(cleanQuery))) return;
-    plans.push({ query: cleanQuery, minimumScore, allowTopResult, source });
+    plans.push({ query: cleanQuery, minimumScore, allowTopResult, source, immediateFallback });
   };
-  addPlan(title, 8, true);
-  for (const variant of titleVariants(title)) addPlan(variant, 70, true);
+  const variants = titleVariants(title);
+  // 読み仮名・エディション表記を外した主題を先に検索する。
+  const canonicalTitle = variants.find((variant) => normaliseTitle(variant) !== normaliseTitle(title));
+  if (canonicalTitle) addPlan(canonicalTitle, 70, true, 'canonical', true);
+  addPlan(title, 8, true, 'title', true);
+  for (const variant of variants) addPlan(variant, 70, true);
   for (const reading of extractJapaneseReadings(title)) addPlan(reading, 70, true, 'reading');
   for (const romanised of kanaSearchVariants(title)) addPlan(romanised, 70, true, 'romanised');
   for (const alias of STEAM_TITLE_ALIASES.get(normaliseTitle(title)) || []) addPlan(alias, 90);

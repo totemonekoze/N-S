@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "N/S",
-  "version": "1.14.6",
+  "version": "1.14.9",
   "description": "Steam / Nintendo Store のほしいものリストを相互検索し、価格・画像を比較できる一覧を作成します。 / Search Steam and Nintendo Store wishlists in either direction and create a price/image comparison list.",
   "permissions": ["activeTab", "tabs", "windows", "storage", "notifications"],
   "host_permissions": [
