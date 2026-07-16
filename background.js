@@ -3,8 +3,7 @@ const NINTENDO_CART_URL = `${NINTENDO_ORIGIN}/cart/`;
 const STEAM_CART_URL = 'https://store.steampowered.com/cart/';
 const SEARCH_CONCURRENCY = 5;
 const CART_ADD_INTERVAL_MS = 900;
-// Set to false to return to the per-request worker-window behavior.
-const REUSE_WORKER_WINDOWS = true;
+const TITLE_VARIANT_CACHE_LIMIT = 1000;
 
 // Nintendo Store の日本語表記が Steam の英語表記とまったく異なる作品の別名。
 // タイトルを追加する場合は、キーを英語タイトル、値をNintendo Storeでの表記にする。
@@ -30,6 +29,7 @@ const STEAM_TO_NINTENDO_PRODUCT_ALIASES = new Map([
 
 let activeBuild = null;
 let activeCart = null;
+const titleVariantCache = new Map();
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   if (message.type === 'BUILD_LIST') {
@@ -38,14 +38,12 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return;
     }
     const job = {
+      ...createWorkerJob(message.games.length),
       cancelled: false,
-      total: message.games.length,
       completed: 0,
       originWindowId: message.originWindowId,
       direction: message.direction || 'steam-to-nintendo',
       limit: Number(message.limit) || 0,
-      workerPool: [],
-      workerWaiters: [],
       progress: { text: '一覧作成を開始しています…' }
     };
     activeBuild = job;
@@ -131,11 +129,11 @@ async function closeProgressTab(job) {
 }
 
 async function createWorkerPool(job) {
-  if (!REUSE_WORKER_WINDOWS || !job.total) return;
+  if (!job.total) return;
   const size = Math.min(SEARCH_CONCURRENCY, job.total);
   try {
     const windows = await Promise.all(Array.from({ length: size }, () => chrome.windows.create({
-      url: chrome.runtime.getURL('progress.html'),
+      url: 'about:blank',
       type: 'popup',
       state: 'minimized',
       focused: false
@@ -157,26 +155,34 @@ async function closeWorkerPool(job) {
   await Promise.all(workers.map((worker) => chrome.windows.remove(worker.windowId).catch(() => {})));
 }
 
-async function withCartWorker(work) {
-  if (activeCart) throw new Error('別のカート追加処理を実行中です。');
-  const job = { total: 1, workerPool: [], workerWaiters: [] };
-  activeCart = job;
+function createWorkerJob(total = 1) {
+  return { total, workerPool: [], workerWaiters: [], readCache: new Map() };
+}
+
+async function withDedicatedWorker(work) {
+  const job = createWorkerJob();
+  await createWorkerPool(job);
   try {
-    // 検索用とは別の最小化ポップアップを１枚だけ使い回す。
-    await createWorkerPool(job);
     return await work(job);
   } finally {
     await closeWorkerPool(job);
-    if (activeCart === job) activeCart = null;
+  }
+}
+
+async function withCartWorker(work) {
+  if (activeCart) throw new Error('別のカート追加処理を実行中です。');
+  const operation = {};
+  activeCart = operation;
+  try {
+    return await withDedicatedWorker(work);
+  } finally {
+    if (activeCart === operation) activeCart = null;
   }
 }
 
 async function lookupCounterpartProduct(message) {
   const sourceUrl = String(message.sourceUrl || '');
-  const job = { total: 1, workerPool: [], workerWaiters: [] };
-  try {
-    // 商品ページからの照合も、ユーザーの通常ウィンドウを使わない専用ポップアップで実行する。
-    await createWorkerPool(job);
+  return withDedicatedWorker(async (job) => {
     if (message.direction === 'steam-to-nintendo') {
       if (!sourceUrl.startsWith('https://store.steampowered.com/app/')) throw new Error('Steamの商品ページを取得できませんでした。');
       const source = await openAndRead(sourceUrl, { type: 'STEAM_PRODUCT' }, job);
@@ -202,9 +208,7 @@ async function lookupCounterpartProduct(message) {
       return { title: result.title, image: result.steamImage || '', url: result.steamUrl, store: 'steam' };
     }
     throw new Error('検索方向を判定できませんでした。');
-  } finally {
-    await closeWorkerPool(job);
-  }
+  });
 }
 
 async function openCartTab(url, originWindowId) {
@@ -214,7 +218,7 @@ async function openCartTab(url, originWindowId) {
 }
 
 function acquireWorker(job) {
-  if (!REUSE_WORKER_WINDOWS || !job?.workerPool?.length) return Promise.resolve(null);
+  if (!job?.workerPool?.length) return Promise.resolve(null);
   const available = job.workerPool.find((worker) => !worker.busy);
   if (available) {
     available.busy = true;
@@ -254,19 +258,7 @@ async function buildList(games, job) {
   const results = await mapWithConcurrency(nintendoResults, SEARCH_CONCURRENCY, (result) => enrichSteamDetails(result, job), () => job.cancelled);
   if (job.cancelled) return finishCancelled();
 
-  await chrome.storage.local.set({ results, resultMode: 'steam-to-nintendo', createdAt: new Date().toISOString() });
-  const resultsOptions = { url: chrome.runtime.getURL('results.html'), active: true };
-  if (Number.isInteger(job.originWindowId)) resultsOptions.windowId = job.originWindowId;
-  await chrome.tabs.create(resultsOptions);
-  await chrome.notifications.clear('wishlist-build-complete');
-  await chrome.notifications.create('wishlist-build-complete', {
-    type: 'basic',
-    iconUrl: chrome.runtime.getURL('icon.svg'),
-    title: 'Nintendo Store 検索結果',
-    message: `${results.length} 件の一覧を作成しました。`,
-    priority: 2
-  });
-  sendBuildProgress({ state: 'complete', text: '一覧を作成しました。' });
+  await publishResults(job, results, 'steam-to-nintendo', 'Nintendo Store 検索結果');
 }
 
 async function buildNintendoToSteamList(initialGames, job) {
@@ -277,7 +269,7 @@ async function buildNintendoToSteamList(initialGames, job) {
 
   const steamResults = await mapWithConcurrency(games, SEARCH_CONCURRENCY, async (game) => {
     try {
-      return { ...game, ...(await findSteamProduct(game, job)) };
+      return { ...game, ...(await findSteamProductWithSourceFallback(game, job)) };
     } catch (error) {
       return {
         ...game,
@@ -294,7 +286,11 @@ async function buildNintendoToSteamList(initialGames, job) {
   const results = await mapWithConcurrency(steamResults, SEARCH_CONCURRENCY, (result) => enrichSteamDetails(result, job), () => job.cancelled);
   if (job.cancelled) return finishCancelled();
 
-  await chrome.storage.local.set({ results, resultMode: 'nintendo-to-steam', createdAt: new Date().toISOString() });
+  await publishResults(job, results, 'nintendo-to-steam', 'Steam 検索結果');
+}
+
+async function publishResults(job, results, resultMode, notificationTitle) {
+  await chrome.storage.local.set({ results, resultMode, createdAt: new Date().toISOString() });
   const resultsOptions = { url: chrome.runtime.getURL('results.html'), active: true };
   if (Number.isInteger(job.originWindowId)) resultsOptions.windowId = job.originWindowId;
   await chrome.tabs.create(resultsOptions);
@@ -302,7 +298,7 @@ async function buildNintendoToSteamList(initialGames, job) {
   await chrome.notifications.create('wishlist-build-complete', {
     type: 'basic',
     iconUrl: chrome.runtime.getURL('icon.svg'),
-    title: 'Steam 検索結果',
+    title: notificationTitle,
     message: `${results.length} 件の一覧を作成しました。`,
     priority: 2
   });
@@ -338,9 +334,10 @@ async function findSteamProduct(game, job) {
   if (directMatch) return { ...directMatch, matchScore: 100 };
   for (const plan of createSteamSearchPlans(game)) {
     const search = await openAndRead(createSteamSearchUrl(plan.query), { type: 'STEAM_SEARCH' }, job);
-    const candidates = search.candidates || [];
-    const candidate = chooseCandidate(candidates.filter((item) => !isSteamExcluded(item.title)), game, plan);
-    if (candidate && candidate.score >= plan.minimumScore) {
+    const allCandidates = search.candidates || [];
+    const candidates = allCandidates.filter((item) => !isSteamExcluded(item.title));
+    const candidate = selectCandidate(candidates, game, plan);
+    if (candidate && isAcceptedCandidate(candidate, candidates, plan)) {
       return {
         title: candidate.title,
         steamAppId: candidate.steamAppId,
@@ -350,28 +347,60 @@ async function findSteamProduct(game, job) {
         matchScore: candidate.score
       };
     }
-    if (candidates.length && candidates.every((item) => isSteamExcluded(item.title))) {
+    if (allCandidates.length && !candidates.length) {
       throw new Error('Steamのバンドルまたはサウンドトラックは対象外です。');
     }
   }
   throw new Error('見つかりませんでした');
 }
 
+async function findSteamProductWithSourceFallback(game, job) {
+  try {
+    return await findSteamProduct(game, job);
+  } catch (firstError) {
+    const resolvedGame = await resolveNintendoSourceGame(game, job);
+    if (normaliseTitle(resolvedGame.title) === normaliseTitle(game.title)) throw firstError;
+    try {
+      return await findSteamProduct(resolvedGame, job);
+    } catch {
+      throw firstError;
+    }
+  }
+}
+
+// お気に入りカードのDOMは表示形式により、ロゴや種別をタイトルとして返すことがある。
+// 一度検索に失敗した場合だけ、商品ページのOGタイトルで再検索する。
+async function resolveNintendoSourceGame(game, job) {
+  const productUrl = String(game.nintendoProductUrl || game.nintendoUrl || '');
+  if (!productUrl.startsWith(NINTENDO_ORIGIN)) return game;
+  try {
+    const detail = await openAndRead(productUrl, { type: 'NINTENDO_PRODUCT' }, job);
+    const title = String(detail?.title || '').trim();
+    if (!title) return game;
+    return {
+      ...game,
+      title,
+      nintendoTitle: title,
+      nintendoImage: game.nintendoImage || detail.image || ''
+    };
+  } catch {
+    return game;
+  }
+}
+
 function createSteamSearchPlans(game) {
   const title = String(game.title || '').trim();
-  const plans = [{ query: title, minimumScore: 8 }];
-  const addPlan = (query, minimumScore = 90) => {
+  const plans = [];
+  const addPlan = (query, minimumScore = 70, allowTopResult = false, source = 'title') => {
     const cleanQuery = String(query || '').trim();
     if (!cleanQuery || plans.some((plan) => normaliseTitle(plan.query) === normaliseTitle(cleanQuery))) return;
-    plans.push({ query: cleanQuery, minimumScore });
+    plans.push({ query: cleanQuery, minimumScore, allowTopResult, source });
   };
-  addPlan(stripJapaneseReading(title), 70);
-  const parts = title.split(/[\s　]+/).filter(Boolean);
-  if (parts.length > 1) {
-    addPlan(parts[0], 70);
-    addPlan(parts.slice(0, -1).join(' '), 70);
-  }
-  for (const alias of STEAM_TITLE_ALIASES.get(normaliseTitle(title)) || []) addPlan(alias);
+  addPlan(title, 8, true);
+  for (const variant of titleVariants(title)) addPlan(variant, 70, true);
+  for (const reading of extractJapaneseReadings(title)) addPlan(reading, 70, true, 'reading');
+  for (const romanised of kanaSearchVariants(title)) addPlan(romanised, 70, true, 'romanised');
+  for (const alias of STEAM_TITLE_ALIASES.get(normaliseTitle(title)) || []) addPlan(alias, 90);
   return plans;
 }
 
@@ -403,8 +432,8 @@ async function findNintendoProduct(game, job) {
   const plans = createSearchPlans(game);
   for (const plan of plans) {
     const search = await openAndRead(createNintendoSearchUrl(plan.query), { type: 'NINTENDO_SEARCH' }, job);
-    const candidate = chooseCandidate(search.candidates || [], game, plan);
-    if (candidate && candidate.score >= plan.minimumScore) {
+    const candidate = selectCandidate(search.candidates || [], game, plan);
+    if (candidate && isAcceptedCandidate(candidate, search.candidates || [], plan)) {
       return {
         searchUrl: createNintendoSearchUrl(plan.query),
         productUrl: candidate.url,
@@ -422,23 +451,25 @@ async function findNintendoProduct(game, job) {
 
 function createSearchPlans(game) {
   const title = String(game.title || '').trim();
-  const plans = [{ query: title, minimumScore: 8 }];
-  const addPlan = (query, requiredSubtitle = '', minimumScore = 80) => {
+  const plans = [];
+  const addPlan = (query, requiredSubtitle = '', minimumScore = 70, allowTopResult = false) => {
     const cleanQuery = String(query || '').trim();
     if (!cleanQuery || plans.some((plan) => normaliseTitle(plan.query) === normaliseTitle(cleanQuery))) return;
-    plans.push({ query: cleanQuery, requiredSubtitle, minimumScore });
+    plans.push({ query: cleanQuery, requiredSubtitle, minimumScore, allowTopResult });
   };
 
-  addPlan(stripJapaneseReading(title), '', 70);
+  addPlan(title, '', 8, true);
+  for (const variant of titleVariants(title)) addPlan(variant, '', 70, true);
+  for (const reading of extractJapaneseReadings(title)) addPlan(reading, '', 70, true);
 
   // 「主題 サブタイトル」では、主題の検索結果にサブタイトル全体が含まれる候補だけを許可する。
   const parts = title.split(/[\s　]+/).filter(Boolean);
   if (parts.length > 1) {
-    addPlan(parts[0], parts.slice(1).join(' '));
-    addPlan(parts.slice(0, -1).join(' '), parts.at(-1));
+    addPlan(parts[0], parts.slice(1).join(' '), 80);
+    addPlan(parts.slice(0, -1).join(' '), parts.at(-1), 80);
   }
   const colonSplit = title.match(/^(.+?)[：:]\s*(.+)$/);
-  if (colonSplit) addPlan(colonSplit[1], colonSplit[2]);
+  if (colonSplit) addPlan(colonSplit[1], colonSplit[2], 80);
 
   const aliasKey = normaliseTitle(title);
   for (const alias of NINTENDO_TITLE_ALIASES.get(aliasKey) || []) addPlan(alias, '', 90);
@@ -479,28 +510,157 @@ async function enrichNintendoDetails(result, job) {
 }
 
 function chooseCandidate(candidates, game, plan) {
-  const query = normaliseTitle(plan.query);
-  const original = normaliseTitle(game.title);
+  const queryForms = titleVariants(plan.query).map(normaliseTitle).filter(Boolean);
+  const originalForms = titleVariants(game.title).map(normaliseTitle).filter(Boolean);
   const requiredSubtitle = normaliseTitle(plan.requiredSubtitle);
   const steamPrice = parsePrice(game.steamPrice || game.nintendoPrice);
 
   return candidates.map((candidate) => {
-    const name = normaliseTitle(candidate.title);
-    if (!name) return null;
-    if (requiredSubtitle && !name.includes(requiredSubtitle)) return null;
+    const nameForms = candidateTitleForms(candidate);
+    if (!nameForms.length) return null;
+    if (requiredSubtitle && !nameForms.some((name) => name.includes(requiredSubtitle))) return null;
 
-    let score = name === query ? 100 : name.startsWith(query) || query.startsWith(name) ? 75 : name.includes(query) || query.includes(name) ? 65 : 0;
-    if (name === original) score = Math.max(score, 100);
+    let score = Math.max(0, ...queryForms.flatMap((query) => nameForms.map((name) => titleMatchScore(name, query))));
+    if (nameForms.some((name) => originalForms.includes(name))) score = Math.max(score, 100);
     if (requiredSubtitle) score += 40;
 
-    const queryTokens = query.split(' ').filter((token) => token.length > 1);
-    score += queryTokens.filter((token) => name.includes(token)).length * 8;
+    const queryTokens = [...new Set(queryForms.flatMap((query) => query.split(' ').filter((token) => token.length > 1)))];
+    score += queryTokens.filter((token) => nameForms.some((name) => name.includes(token))).length * 8;
     const nintendoPrice = parsePrice(candidate.price);
-    if (steamPrice && nintendoPrice) {
+    if (score > 0 && steamPrice && nintendoPrice) {
       score += Math.max(0, 15 - Math.round(Math.abs(steamPrice - nintendoPrice) / Math.max(steamPrice, nintendoPrice) * 15));
     }
     return { ...candidate, score };
-  }).filter(Boolean).sort((left, right) => right.score - left.score)[0] || null;
+  }).filter(Boolean).sort((left, right) => right.score - left.score || (left.rank ?? Number.MAX_SAFE_INTEGER) - (right.rank ?? Number.MAX_SAFE_INTEGER))[0] || null;
+}
+
+// 検索結果でタイトルの前方一致を確認できた場合は、価格や表記記号の差に
+// 影響されず採用する。完全一致を最優先し、同点時は検索結果の上位を選ぶ。
+function selectCandidate(candidates, game, plan) {
+  const prefixCandidate = findPrefixCandidate(candidates, plan);
+  if (prefixCandidate) return prefixCandidate;
+  return chooseCandidate(candidates, game, plan);
+}
+
+function findPrefixCandidate(candidates, plan) {
+  const queryForms = titleVariants(plan.query).map(normaliseTitle).filter(isDistinctiveTitle);
+  const requiredSubtitle = normaliseTitle(plan.requiredSubtitle);
+  if (!queryForms.length) return null;
+
+  const matches = candidates.map((candidate) => {
+    const nameForms = candidateTitleForms(candidate);
+    if (requiredSubtitle && !nameForms.some((name) => name.includes(requiredSubtitle))) return null;
+    let strength = 0;
+    for (const query of queryForms) {
+      for (const name of nameForms) {
+        if (name === query) strength = Math.max(strength, 3);
+        else if (name.startsWith(query)) strength = Math.max(strength, 2);
+        else if (query.startsWith(name) && isDistinctiveTitle(name)) strength = Math.max(strength, 1);
+      }
+    }
+    return strength ? { ...candidate, score: Math.max(candidate.score || 0, 70 + strength * 10), prefixMatch: true, prefixStrength: strength } : null;
+  }).filter(Boolean);
+
+  return matches.sort((left, right) => right.prefixStrength - left.prefixStrength || (left.rank ?? Number.MAX_SAFE_INTEGER) - (right.rank ?? Number.MAX_SAFE_INTEGER))[0] || null;
+}
+
+function candidateTitleForms(candidate) {
+  const slugTitle = steamTitleFromUrl(candidate.url);
+  return [...new Set([candidate.title, candidate.searchKey, slugTitle]
+    .flatMap((value) => titleVariants(value).map(normaliseTitle))
+    .filter(Boolean))];
+}
+
+function steamTitleFromUrl(url) {
+  try {
+    const parts = new URL(url).pathname.split('/').filter(Boolean);
+    const appIndex = parts.indexOf('app');
+    const slug = appIndex >= 0 ? parts[appIndex + 2] : '';
+    return slug ? decodeURIComponent(slug).replace(/_/g, ' ') : '';
+  } catch {
+    return '';
+  }
+}
+
+function isAcceptedCandidate(candidate, candidates, plan) {
+  if (candidate.prefixMatch) return true;
+  if (candidate.score >= plan.minimumScore) return true;
+  if (!plan.allowTopResult || candidate.rank !== candidates[0]?.rank || !isDistinctiveTitle(plan.query)) return false;
+  return usesDifferentWritingSystems(plan.query, candidate.title);
+}
+
+function titleMatchScore(name, query) {
+  if (name === query) return 100;
+  if (name.startsWith(query) || query.startsWith(name)) return 75;
+  if (name.includes(query) || query.includes(name)) return 65;
+  return 0;
+}
+
+function titleVariants(value) {
+  const cacheKey = String(value || '');
+  const cached = titleVariantCache.get(cacheKey);
+  if (cached) return cached;
+  const variants = new Map();
+  const add = (candidate) => {
+    const clean = cleanStoreTitle(candidate);
+    const key = normaliseTitle(clean);
+    if (key) variants.set(key, clean);
+  };
+  const original = cleanStoreTitle(value);
+  add(original);
+  add(stripJapaneseReading(original));
+  add(stripTrailingKanaReading(original));
+  add(stripEditionSuffix(original));
+  add(stripEditionSuffix(stripJapaneseReading(original)));
+  add(stripEditionSuffix(stripTrailingKanaReading(original)));
+
+  const parts = original.split(/[‐‑‒–—―-]+/u).map((part) => part.trim()).filter(Boolean);
+  if (parts.length > 1) {
+    const titleParts = parts.filter((part) => !isEditionDescriptor(part));
+    add(titleParts.join(' '));
+    add(titleParts.filter((part) => /[A-Za-z]/.test(part)).join(' '));
+    add(titleParts.filter((part) => /[\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Han}]/u.test(part)).join(' '));
+  }
+
+  for (const candidate of [...variants.values()]) {
+    add(stripJapaneseReading(candidate));
+    add(stripTrailingKanaReading(candidate));
+    add(stripEditionSuffix(candidate));
+  }
+  const result = [...variants.values()];
+  if (titleVariantCache.size >= TITLE_VARIANT_CACHE_LIMIT) titleVariantCache.clear();
+  titleVariantCache.set(cacheKey, result);
+  return result;
+}
+
+function cleanStoreTitle(value) {
+  return String(value || '')
+    .replace(/[\u200B-\u200D\uFEFF]/g, '')
+    .replace(/\s*[|｜]\s*(?:(?:My\s*)?Nintendo\s*Store|マイニンテンドーストア|Steam).*$/iu, '')
+    .replace(/\s+on\s+Steam$/iu, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function stripEditionSuffix(value) {
+  const suffix = /(?:\s*[-‐‑‒–—―:：]?\s*)(?:(?:digital\s*)?(?:deluxe|complete|definitive|ultimate|special|standard|gold|premium)\s*edition|(?:デジタル\s*)?(?:デラックス|コンプリート|完全|決定|アルティメット|スペシャル|通常)版)\s*$/iu;
+  let result = String(value || '').trim();
+  while (suffix.test(result)) result = result.replace(suffix, '').trim();
+  return result;
+}
+
+function isEditionDescriptor(value) {
+  return /^(?:(?:digital\s*)?(?:deluxe|complete|definitive|ultimate|special|standard|gold|premium)\s*edition|(?:デジタル\s*)?(?:デラックス|コンプリート|完全|決定|アルティメット|スペシャル|通常)版)$/iu.test(String(value || '').trim());
+}
+
+function isDistinctiveTitle(value) {
+  return normaliseTitle(value).replace(/\s/g, '').length >= 5;
+}
+
+function usesDifferentWritingSystems(left, right) {
+  const japanese = /[\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Han}]/u;
+  const latin = /[A-Za-z]/;
+  return (japanese.test(left) && latin.test(right)) || (latin.test(left) && japanese.test(right));
 }
 
 function normaliseTitle(value) {
@@ -515,7 +675,70 @@ function normaliseTitle(value) {
 }
 
 function stripJapaneseReading(value) {
-  return String(value || '').replace(/[（(]\s*[ぁ-んァ-ヶー・]+\s*[）)]/g, '').replace(/\s+/g, ' ').trim();
+  return String(value || '')
+    .replace(/[（(]\s*[\p{Script=Hiragana}\p{Script=Katakana}ー・\s]+\s*[）)]/gu, '')
+    .replace(/[［[]\s*[\p{Script=Hiragana}\p{Script=Katakana}ー・\s]+\s*[\]］]/gu, '')
+    .replace(/【\s*[\p{Script=Hiragana}\p{Script=Katakana}ー・\s]+\s*】/gu, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function stripTrailingKanaReading(value) {
+  const text = String(value || '').replace(/\s+/g, ' ').trim();
+  const match = text.match(/^(.+?)(?:\s*[-‐‑‒–—―:：/／|｜]\s*|\s+)([\p{Script=Hiragana}\p{Script=Katakana}ー・\s]+)$/u);
+  return match && /[A-Za-z0-9]/.test(match[1]) ? match[1].trim() : text;
+}
+
+function extractJapaneseReadings(value) {
+  const readings = new Set();
+  const text = String(value || '');
+  for (const match of text.matchAll(/[（(［[【]\s*([\p{Script=Hiragana}\p{Script=Katakana}ー・\s]+)\s*[）)］\]】]/gu)) {
+    const reading = match[1].replace(/\s+/g, ' ').trim();
+    if (isDistinctiveTitle(reading)) readings.add(reading);
+  }
+  const trailing = text.match(/(?:\s*[-‐‑‒–—―:：/／|｜]\s*|\s+)([\p{Script=Hiragana}\p{Script=Katakana}ー・\s]+)$/u)?.[1]?.trim();
+  if (trailing && isDistinctiveTitle(trailing)) readings.add(trailing);
+  return [...readings];
+}
+
+function kanaSearchVariants(value) {
+  return [...new Set(extractJapaneseReadings(value).map(romaniseKana).filter(isDistinctiveTitle))];
+}
+
+function romaniseKana(value) {
+  const source = String(value || '').normalize('NFKC').replace(/[ぁ-ゖ]/g, (character) => String.fromCodePoint(character.codePointAt(0) + 0x60));
+  const syllables = {
+    キャ: 'kya', キュ: 'kyu', キョ: 'kyo', シャ: 'sha', シュ: 'shu', ショ: 'sho', チャ: 'cha', チュ: 'chu', チョ: 'cho',
+    ニャ: 'nya', ニュ: 'nyu', ニョ: 'nyo', ヒャ: 'hya', ヒュ: 'hyu', ヒョ: 'hyo', ミャ: 'mya', ミュ: 'myu', ミョ: 'myo',
+    リャ: 'rya', リュ: 'ryu', リョ: 'ryo', ギャ: 'gya', ギュ: 'gyu', ギョ: 'gyo', ジャ: 'ja', ジュ: 'ju', ジョ: 'jo',
+    ビャ: 'bya', ビュ: 'byu', ビョ: 'byo', ピャ: 'pya', ピュ: 'pyu', ピョ: 'pyo', ティ: 'ti', ディ: 'di', トゥ: 'tu', ドゥ: 'du',
+    ファ: 'fa', フィ: 'fi', フェ: 'fe', フォ: 'fo', ウィ: 'wi', ウェ: 'we', ウォ: 'wo', ヴァ: 'va', ヴィ: 'vi', ヴェ: 've', ヴォ: 'vo'
+  };
+  const single = {
+    ア: 'a', イ: 'i', ウ: 'u', エ: 'e', オ: 'o', カ: 'ka', キ: 'ki', ク: 'ku', ケ: 'ke', コ: 'ko', サ: 'sa', シ: 'shi', ス: 'su', セ: 'se', ソ: 'so',
+    タ: 'ta', チ: 'chi', ツ: 'tsu', テ: 'te', ト: 'to', ナ: 'na', ニ: 'ni', ヌ: 'nu', ネ: 'ne', ノ: 'no', ハ: 'ha', ヒ: 'hi', フ: 'fu', ヘ: 'he', ホ: 'ho',
+    マ: 'ma', ミ: 'mi', ム: 'mu', メ: 'me', モ: 'mo', ヤ: 'ya', ユ: 'yu', ヨ: 'yo', ラ: 'ra', リ: 'ri', ル: 'ru', レ: 're', ロ: 'ro', ワ: 'wa', ヲ: 'wo', ン: 'n',
+    ガ: 'ga', ギ: 'gi', グ: 'gu', ゲ: 'ge', ゴ: 'go', ザ: 'za', ジ: 'ji', ズ: 'zu', ゼ: 'ze', ゾ: 'zo', ダ: 'da', ヂ: 'ji', ヅ: 'zu', デ: 'de', ド: 'do',
+    バ: 'ba', ビ: 'bi', ブ: 'bu', ベ: 'be', ボ: 'bo', パ: 'pa', ピ: 'pi', プ: 'pu', ペ: 'pe', ポ: 'po', ヴ: 'vu'
+  };
+  let result = '';
+  for (let index = 0; index < source.length; index += 1) {
+    const character = source[index];
+    const pair = source.slice(index, index + 2);
+    if (syllables[pair]) {
+      result += syllables[pair];
+      index += 1;
+    } else if (character === 'ッ') {
+      const following = syllables[source.slice(index + 1, index + 3)] || single[source[index + 1]] || '';
+      result += following ? following[0] : '';
+    } else if (character === 'ー') {
+      const vowel = result.match(/[aeiou](?!.*[aeiou])/u)?.[0] || '';
+      result += vowel;
+    } else {
+      result += single[character] || (/[A-Za-z0-9]/.test(character) ? character.toLowerCase() : ' ');
+    }
+  }
+  return result.replace(/\s+/g, ' ').trim();
 }
 
 function isSteamExcluded(value) {
@@ -539,34 +762,30 @@ async function addToSteamCart(productUrl, title, job) {
 }
 
 async function addManyToSteamCart(productUrls, job) {
-  const urls = [...new Set(productUrls)].filter((url) => url.startsWith('https://store.steampowered.com/app/'));
-  const failed = [];
-  let added = 0;
-  for (const url of urls) {
-    try {
-      await addToSteamCart(url, '', job);
-      added += 1;
-    } catch (error) {
-      failed.push({ url, error: error.message });
-    }
-    await delay(CART_ADD_INTERVAL_MS);
-  }
-  await chrome.notifications.create({
-    type: 'basic',
-    iconUrl: chrome.runtime.getURL('icon.svg'),
-    title: 'Steam',
-    message: failed.length ? `${added}件を追加しました。失敗: ${failed.length}件` : `${added}件をカートに追加しました。`
-  });
-  return { added, failed };
+  return addManyToCart(
+    productUrls,
+    (url) => url.startsWith('https://store.steampowered.com/app/'),
+    (url) => addToSteamCart(url, '', job),
+    'Steam'
+  );
 }
 
 async function addManyToNintendoCart(productUrls, job) {
-  const urls = [...new Set(productUrls)].filter((url) => url.startsWith(`${NINTENDO_ORIGIN}/item/`) || url.startsWith(`${NINTENDO_ORIGIN}/products/`));
+  return addManyToCart(
+    productUrls,
+    (url) => url.startsWith(`${NINTENDO_ORIGIN}/item/`) || url.startsWith(`${NINTENDO_ORIGIN}/products/`),
+    (url) => addToNintendoCart(url, job),
+    'Nintendo Store'
+  );
+}
+
+async function addManyToCart(productUrls, isValidUrl, addItem, storeName) {
+  const urls = [...new Set(productUrls)].filter(isValidUrl);
   const failed = [];
   let added = 0;
   for (const url of urls) {
     try {
-      await addToNintendoCart(url, job);
+      await addItem(url);
       added += 1;
     } catch (error) {
       failed.push({ url, error: error.message });
@@ -576,7 +795,7 @@ async function addManyToNintendoCart(productUrls, job) {
   await chrome.notifications.create({
     type: 'basic',
     iconUrl: chrome.runtime.getURL('icon.svg'),
-    title: 'Nintendo Store',
+    title: storeName,
     message: failed.length ? `${added}件を追加しました。失敗: ${failed.length}件` : `${added}件をカートに追加しました。`
   });
   return { added, failed };
@@ -595,6 +814,23 @@ async function mapWithConcurrency(items, limit, mapper, isCancelled = () => fals
 }
 
 async function openAndRead(url, message, job) {
+  const cacheKey = isCacheableRead(message) ? `${message.type}:${url}` : '';
+  if (cacheKey && job?.readCache?.has(cacheKey)) return job.readCache.get(cacheKey);
+  const request = readPage(url, message, job);
+  if (cacheKey && job?.readCache) job.readCache.set(cacheKey, request);
+  try {
+    return await request;
+  } catch (error) {
+    if (cacheKey) job?.readCache?.delete(cacheKey);
+    throw error;
+  }
+}
+
+function isCacheableRead(message) {
+  return ['STEAM_PRODUCT', 'NINTENDO_PRODUCT', 'STEAM_SEARCH', 'NINTENDO_SEARCH', 'GET_NINTENDO_WISHLIST'].includes(message.type);
+}
+
+async function readPage(url, message, job) {
   const worker = await acquireWorker(job);
   if (worker) {
     try {
@@ -605,22 +841,15 @@ async function openAndRead(url, message, job) {
     }
   }
 
-  let tab;
-  let workerWindowId;
-  if (job) {
-    const workerWindow = await chrome.windows.create({ url, type: 'popup', state: 'minimized', focused: false });
-    workerWindowId = workerWindow.id;
-    tab = workerWindow.tabs?.[0] || (await chrome.tabs.query({ windowId: workerWindowId }))[0];
-  } else {
-    tab = await chrome.tabs.create({ url, active: false });
-  }
+  const workerWindow = await chrome.windows.create({ url, type: 'popup', state: 'minimized', focused: false });
+  const workerWindowId = workerWindow.id;
+  const tab = workerWindow.tabs?.[0] || (await chrome.tabs.query({ windowId: workerWindowId }))[0];
   if (!tab?.id) throw new Error('検索用ページを作成できませんでした。');
   try {
     await waitForTabComplete(tab.id);
     return await chrome.tabs.sendMessage(tab.id, message);
   } finally {
-    if (workerWindowId) await chrome.windows.remove(workerWindowId).catch(() => {});
-    else await chrome.tabs.remove(tab.id).catch(() => {});
+    await chrome.windows.remove(workerWindowId).catch(() => {});
   }
 }
 
