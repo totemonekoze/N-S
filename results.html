@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="stylesheet" href="results.css">
+    <title>N/S</title>
+  </head>
+  <body>
+    <header><div class="header-row"><p id="summary"></p><div class="header-actions"><button id="enter-selection">まとめてカートに入れる</button><div id="selection-actions" hidden><button id="cancel-selection" class="secondary">選択解除</button><button id="batch-add" disabled>まとめてカートに追加（0）</button></div></div></div></header>
+    <main id="cards" aria-live="polite"></main>
+    <template id="card-template"><article class="card"><label class="select-control"><input class="select-card" type="checkbox" aria-label="この商品を選択"></label><div class="covers"><figure><img class="steam-cover" alt="Steam"><figcaption><img class="store-icon steam-store-icon" alt="Steam"><span class="steam-price"></span></figcaption></figure><figure><img class="cover" alt="Nintendo Store"><figcaption><img class="store-icon nintendo-store-icon" alt="Nintendo Store"><span class="nintendo-price"></span></figcaption></figure></div><div class="body"><div class="product-title"></div><div class="error-note" hidden></div><div class="source"><img class="favicon" alt="">Nintendo Store</div><div class="actions"><a class="product-link" target="_blank" rel="noopener">商品ページを開く</a><a class="cart-button" target="_blank" rel="noopener">カートに入れる</a></div></div></article></template>
+    <script src="results.js"></script>
+  </body>
+</html>

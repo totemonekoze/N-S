@@ -1,0 +1,12 @@
+body { width: 290px; margin: 0; background: #f7f7f8; color: #202124; font: 14px system-ui, sans-serif; }
+main { padding: 18px; }
+h1 { font-size: 16px; margin: 0 0 10px; }
+p { color: #5f6368; line-height: 1.5; margin: 0 0 16px; }
+label { display: block; margin-bottom: 6px; font-weight: 700; }.count-control { display: flex; gap: 7px; margin-bottom: 14px; } select, input { min-width: 0; border: 1px solid #bbb; border-radius: 6px; padding: 8px; font: inherit; } select { flex: 1; } input { width: 62px; }
+button { width: 100%; border: 0; border-radius: 8px; padding: 10px; color: white; background: #e60012; font-weight: 700; cursor: pointer; }
+button:disabled { opacity: .55; cursor: wait; }
+button.cancel { margin-top: 8px; background: #6b7280; }
+output { display: block; min-height: 20px; margin-top: 12px; line-height: 1.4; color: #444; }
+main.nintendo button:not(.cancel) { background: #173d6b; }
+main.unsupported { padding: 18px; } main.unsupported #heading { display: none; } main.unsupported #unsupported { display: block; margin: 0; color: #202124; }
+.counterpart-card { display: grid; grid-template-columns: 72px 1fr; align-items: center; gap: 10px; margin: 0 0 12px; border-radius: 8px; padding: 8px; background: white; box-shadow: 0 1px 4px #0002; }.counterpart-card img { width: 72px; height: 72px; border-radius: 5px; object-fit: cover; background: #e5e7eb; }.counterpart-card strong { line-height: 1.35; }

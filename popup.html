@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="stylesheet" href="popup.css">
+    <title>N/S</title>
+  </head>
+  <body>
+    <main id="popup">
+      <h1 id="heading">N/S</h1>
+      <section id="list-section" hidden>
+        <label for="count">取得件数</label>
+        <div class="count-control">
+          <select id="count">
+            <option value="10">10件</option>
+            <option value="50" selected>50件</option>
+            <option value="100">100件</option>
+            <option value="0">全件</option>
+            <option value="custom">任意の件数</option>
+          </select>
+          <input id="custom-count" type="number" min="1" step="1" placeholder="件数" hidden>
+        </div>
+        <button id="run">検索して一覧を作成</button>
+        <button id="cancel" class="cancel" hidden>作成を中断</button>
+        <output id="status" aria-live="polite"></output>
+      </section>
+      <section id="product-section" hidden>
+        <p id="product-status" aria-live="polite">検索しています…</p>
+        <article id="counterpart-card" class="counterpart-card" hidden>
+          <img id="counterpart-image" alt="">
+          <strong id="counterpart-title"></strong>
+        </article>
+        <button id="open-product" hidden>商品ページへ</button>
+      </section>
+      <p id="unsupported" hidden>NintendoStore または Steamのページで起動してください</p>
+    </main>
+    <script src="popup.js"></script>
+  </body>
+</html>

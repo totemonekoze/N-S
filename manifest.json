@@ -1,0 +1,38 @@
+{
+  "manifest_version": 3,
+  "name": "N/S",
+  "version": "1.14.2",
+  "description": "Steam / Nintendo Store のほしいものリストを相互検索し、価格・画像を比較できる一覧を作成します。 / Search Steam and Nintendo Store wishlists in either direction and create a price/image comparison list.",
+  "permissions": ["activeTab", "tabs", "windows", "storage", "notifications"],
+  "host_permissions": [
+    "https://store.steampowered.com/*",
+    "https://store-jp.nintendo.com/*"
+  ],
+  "action": {
+    "default_title": "N/S",
+    "default_popup": "popup.html"
+  },
+  "background": { "service_worker": "background.js", "type": "module" },
+  "content_scripts": [
+    {
+      "matches": ["https://store.steampowered.com/app/*"],
+      "js": ["steam-cart-main.js"],
+      "run_at": "document_idle",
+      "world": "MAIN"
+    },
+    {
+      "matches": ["https://store.steampowered.com/wishlist/*", "https://store.steampowered.com/app/*"],
+      "js": ["wishlist.js"]
+    },
+    {
+      "matches": ["https://store.steampowered.com/search/*"],
+      "js": ["steam-search.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://store-jp.nintendo.com/*"],
+      "js": ["nintendo.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
