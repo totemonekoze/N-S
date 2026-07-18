@@ -1,0 +1,11 @@
+{
+  "extensionName": {
+    "message": "S:S"
+  },
+  "extensionDescription": {
+    "message": "Steam / Nintendo Store のほしいもの・所持ゲームを相互検索し、価格・画像を比較できる一覧を作成します。"
+  },
+  "extensionActionTitle": {
+    "message": "S:Sを開く"
+  }
+}

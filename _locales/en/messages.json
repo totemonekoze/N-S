@@ -1,0 +1,11 @@
+{
+  "extensionName": {
+    "message": "S:S"
+  },
+  "extensionDescription": {
+    "message": "Search Steam and Nintendo Store wishlists and game libraries in either direction, then compare prices and images."
+  },
+  "extensionActionTitle": {
+    "message": "Open S:S"
+  }
+}

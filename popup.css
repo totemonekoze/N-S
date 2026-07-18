@@ -1,12 +1,31 @@
 body { width: 290px; margin: 0; background: #f7f7f8; color: #202124; font: 14px system-ui, sans-serif; }
 main { padding: 18px; }
+main.product { box-sizing: border-box; min-height: 258px; }
 h1 { font-size: 16px; margin: 0 0 10px; }
 p { color: #5f6368; line-height: 1.5; margin: 0 0 16px; }
 label { display: block; margin-bottom: 6px; font-weight: 700; }.count-control { display: flex; gap: 7px; margin-bottom: 14px; } select, input { min-width: 0; border: 1px solid #bbb; border-radius: 6px; padding: 8px; font: inherit; } select { flex: 1; } input { width: 62px; }
 button { width: 100%; border: 0; border-radius: 8px; padding: 10px; color: white; background: #e60012; font-weight: 700; cursor: pointer; }
 button:disabled { opacity: .55; cursor: wait; }
 button.cancel { margin-top: 8px; background: #6b7280; }
+#add-favorite { margin-top: 8px; }
 output { display: block; min-height: 20px; margin-top: 12px; line-height: 1.4; color: #444; }
-main.nintendo button:not(.cancel) { background: #173d6b; }
-main.unsupported { padding: 18px; } main.unsupported #heading { display: none; } main.unsupported #unsupported { display: block; margin: 0; color: #202124; }
+/* Nintendo → Steam: Steamクライアントを意識したダークネイビー＋グリーン配色 */
+main.nintendo { background: linear-gradient(145deg, #1b2838, #0e1b28); color: #d6d7d8; }
+main.nintendo h1,
+main.nintendo label { color: #f1f5f9; }
+main.nintendo p,
+main.nintendo output { color: #b8c7d9; }
+main.nintendo select,
+main.nintendo input { border-color: #4c6b8d; background: #16202d; color: #f1f5f9; }
+main.nintendo button:not(.cancel) { background: linear-gradient(180deg, #8abf00, #5f8f00); box-shadow: inset 0 1px #b8e33c, 0 1px 3px #0008; }
+main.nintendo button:not(.cancel):hover { background: linear-gradient(180deg, #9bd600, #6ca300); }
+main.nintendo button.cancel { background: #3b5875; }
+main.nintendo .counterpart-card { border: 1px solid #39516a; background: #16202d; box-shadow: 0 1px 4px #0008; }
+main.nintendo .counterpart-card img { background: #0b121b; }
+main.unsupported { min-height: 142px; display: flex; flex-direction: column; justify-content: center; text-align: center; }
+main.unsupported #heading { align-self: stretch; margin: 0 0 16px; text-align: left; }
+main.unsupported #unsupported { display: block; margin: 0; color: #5f6368; line-height: 1.65; }
+.language-section { width: 100%; margin-top: 18px; text-align: left; }
+.language-section label { color: #202124; }
+.language-section select { box-sizing: border-box; width: 100%; background: #fff; color: #202124; }
 .counterpart-card { display: grid; grid-template-columns: 72px 1fr; align-items: center; gap: 10px; margin: 0 0 12px; border-radius: 8px; padding: 8px; background: white; box-shadow: 0 1px 4px #0002; }.counterpart-card img { width: 72px; height: 72px; border-radius: 5px; object-fit: cover; background: #e5e7eb; }.counterpart-card strong { line-height: 1.35; }
