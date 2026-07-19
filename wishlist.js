@@ -25,19 +25,23 @@ chrome.runtime.onMessage.addListener((message, _sender, respond) => {
 });
 
 async function collectWishlistGames(limit) {
-  const found = new Map();
-  collectVisibleWishlistRows(found);
+  const visibleGames = new Map();
+  const confirmedGames = new Map();
+  // DOM走査中に件数へ達しても確認を省略しない。Steamのウィッシュリスト専用データを
+  // 並行取得し、ページ内の関連商品やおすすめ商品が混入しないよう所属IDを照合する。
+  const confirmedPages = loadWishlistPages(confirmedGames, limit);
+  collectVisibleWishlistRows(visibleGames);
 
   // 新しいウィッシュリストは仮想スクロールで、初期DOMには見えているゲームだけが入る。
   // Steam自身に続きの行を描画させながら、指定件数に達するまで順に収集する。
-  await collectVirtualizedWishlistRows(found, limit);
+  await collectVirtualizedWishlistRows(visibleGames, limit);
 
   const wishlistData = readPageJson('g_rgWishlistData');
   const appInfo = readPageJson('g_rgAppInfo') || {};
   for (const entry of wishlistEntries(wishlistData)) {
-    if (!entry.steamAppId || found.has(entry.steamAppId)) continue;
+    if (!entry.steamAppId || confirmedGames.has(entry.steamAppId)) continue;
     const info = appInfo[entry.steamAppId] || {};
-    found.set(entry.steamAppId, {
+    confirmedGames.set(entry.steamAppId, {
       steamAppId: entry.steamAppId,
       title: normalise(info.name || info.title || entry.title || ''),
       steamImage: '',
@@ -45,10 +49,35 @@ async function collectWishlistGames(limit) {
     });
   }
 
-  // 旧レイアウトでは公式のページングAPIも補助として利用する。
-  await loadWishlistPages(found, limit);
-  const games = [...found.values()].filter((game) => game.title);
+  await confirmedPages;
+  const games = mergeConfirmedWishlistGames(visibleGames, confirmedGames);
   return limit > 0 ? games.slice(0, limit) : games;
+}
+
+function mergeConfirmedWishlistGames(visibleGames, confirmedGames) {
+  if (!confirmedGames.size) return [...visibleGames.values()].filter((game) => game.title);
+  const merged = [];
+  const added = new Set();
+  const append = (steamAppId, confirmed, visible = {}) => {
+    if (added.has(steamAppId)) return;
+    const game = {
+      ...confirmed,
+      steamAppId,
+      title: confirmed.title || visible.title || '',
+      steamImage: visible.steamImage || confirmed.steamImage || '',
+      steamPrice: visible.steamPrice || confirmed.steamPrice || ''
+    };
+    if (!game.title) return;
+    added.add(steamAppId);
+    merged.push(game);
+  };
+  // 画面上の順位を優先するが、専用データで確認できない商品は採用しない。
+  for (const [steamAppId, visible] of visibleGames) {
+    const confirmed = confirmedGames.get(steamAppId);
+    if (confirmed) append(steamAppId, confirmed, visible);
+  }
+  for (const [steamAppId, confirmed] of confirmedGames) append(steamAppId, confirmed, visibleGames.get(steamAppId));
+  return merged;
 }
 
 async function collectOwnedSteamGames(limit) {
@@ -159,7 +188,7 @@ function findOwnedGamesScrollRoot() {
 function collectVisibleWishlistRows(found) {
   const addGame = (steamAppId, title, node) => {
     if (!steamAppId || !title || /^\d+$/.test(title) || found.has(steamAppId)) return;
-    const row = node?.closest('.wishlist_row, [data-app-id], [data-rfd-draggable-id^="WishlistItem-"]') || node;
+    const row = node;
     const imageNode = row?.querySelector('img[src*="/apps/"][src*="/header"]') || row?.querySelector('img[src]');
     const rawPrice = row?.querySelector('.discount_final_price, .discount_price, .price, [class*="price"]')?.textContent ||
       (row?.textContent || '').match(/[¥￥]\s?[\d,]+/)?.[0] || '';
@@ -171,19 +200,33 @@ function collectVisibleWishlistRows(found) {
     });
   };
 
-  document.querySelectorAll('[data-app-id]').forEach((node) => {
-    const appId = node.dataset.appId;
-    const title = normalise(
-      node.querySelector('.title, .ellipsis, .wishlist_row_title, [class*=title]')?.textContent ||
-      node.getAttribute('data-ds-appid') || ''
+  wishlistRowElements().forEach((row) => {
+    const identityNode = row.matches('[data-app-id], [data-appid], [data-ds-appid]')
+      ? row
+      : row.querySelector('[data-app-id], [data-appid], [data-ds-appid]');
+    const appLink = row.querySelector('a[href*="/app/"]');
+    const draggableId = row.getAttribute('data-rfd-draggable-id') || '';
+    const appId = String(
+      identityNode?.dataset.appId ||
+      identityNode?.dataset.appid ||
+      identityNode?.dataset.dsAppid ||
+      steamAppIdFromHref(appLink?.href) ||
+      draggableId.match(/(\d+)/)?.[1] ||
+      ''
     );
-    addGame(appId, title, node);
+    const title = normalise(
+      row.querySelector('.wishlist_row_title, .title, .ellipsis, [class*="title" i]')?.textContent ||
+      appLink?.querySelector('.title, .ellipsis, [class*="title" i]')?.textContent ||
+      row.querySelector('img[alt]')?.alt ||
+      ''
+    );
+    addGame(appId, title, row);
   });
-  document.querySelectorAll('a[href*="/app/"]').forEach((link) => {
-    const appId = link.href.match(/\/app\/(\d+)/)?.[1];
-    const title = normalise(link.querySelector('.title, .ellipsis')?.textContent || link.textContent);
-    addGame(appId, title, link);
-  });
+}
+
+function wishlistRowElements() {
+  return [...document.querySelectorAll('.wishlist_row, [data-rfd-draggable-id]')]
+    .filter((row) => row.matches('.wishlist_row') || /wishlistitem/i.test(row.getAttribute('data-rfd-draggable-id') || ''));
 }
 
 async function collectVirtualizedWishlistRows(found, limit) {
@@ -214,7 +257,7 @@ async function collectVirtualizedWishlistRows(found, limit) {
 }
 
 function findWishlistScrollRoot() {
-  const row = document.querySelector('[data-rfd-draggable-id^="WishlistItem-"]');
+  const row = wishlistRowElements()[0];
   for (let element = row?.parentElement; element && element !== document.body; element = element.parentElement) {
     if (element.scrollHeight > element.clientHeight + 100) return element;
   }
