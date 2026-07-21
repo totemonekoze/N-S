@@ -1,0 +1,4 @@
+:root { font-family: system-ui, -apple-system, sans-serif; color: #202124; background: #f6f6f7; }
+body { display: grid; min-height: 100vh; margin: 0; place-items: center; }
+main { width: min(440px, calc(100vw - 48px)); padding: 28px; border-radius: 12px; background: white; box-shadow: 0 4px 18px #0002; }
+h1 { margin: 0 0 14px; font-size: 22px; } p { min-height: 24px; line-height: 1.5; color: #555; } button { border: 0; border-radius: 7px; padding: 10px 14px; color: white; background: #6b7280; font-weight: 700; cursor: pointer; } button:disabled { opacity: .5; cursor: default; }

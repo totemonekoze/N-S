@@ -1,0 +1,60 @@
+{
+  "manifest_version": 3,
+  "name": "__MSG_extensionName__",
+  "version": "1.3",
+  "description": "__MSG_extensionDescription__",
+  "default_locale": "en",
+  "permissions": ["activeTab", "tabs", "windows", "storage", "notifications"],
+  "icons": {
+    "16": "icon.png",
+    "32": "icon.png",
+    "48": "icon.png",
+    "128": "icon.png"
+  },
+  "host_permissions": [
+    "https://store.steampowered.com/*",
+    "https://store-jp.nintendo.com/*",
+    "https://steamcommunity.com/*",
+    "https://accounts.nintendo.com/*"
+  ],
+  "action": {
+    "default_title": "__MSG_extensionActionTitle__",
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icon.png",
+      "32": "icon.png"
+    }
+  },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": false
+  },
+  "background": { "service_worker": "background.js", "type": "module" },
+  "content_scripts": [
+    {
+      "matches": ["https://store.steampowered.com/app/*"],
+      "js": ["steam-cart-main.js"],
+      "run_at": "document_idle",
+      "world": "MAIN"
+    },
+    {
+      "matches": ["https://store.steampowered.com/wishlist/*", "https://store.steampowered.com/app/*", "https://steamcommunity.com/profiles/*/games*"],
+      "js": ["search-rules.js", "wishlist.js"]
+    },
+    {
+      "matches": ["https://store.steampowered.com/search/*"],
+      "js": ["search-rules.js", "steam-search.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://store-jp.nintendo.com/*"],
+      "js": ["nintendo.js"],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": ["https://accounts.nintendo.com/portal/vgcs*"],
+      "js": ["vgc.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

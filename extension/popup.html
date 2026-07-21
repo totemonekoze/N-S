@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="stylesheet" href="popup.css">
+    <title>S:S</title>
+  </head>
+  <body>
+    <main id="popup">
+      <h1 id="heading">S:S</h1>
+      <section id="list-section" hidden>
+        <label for="count" id="count-label">取得件数</label>
+        <div class="count-control">
+          <select id="count">
+            <option value="10" id="count-10">10件</option>
+            <option value="50" id="count-50" selected>50件</option>
+            <option value="100" id="count-100">100件</option>
+            <option value="0" id="count-all">全件</option>
+            <option value="custom" id="count-custom">任意の件数</option>
+          </select>
+          <input id="custom-count" type="number" min="1" step="1" placeholder="件数" hidden>
+        </div>
+        <button id="run">検索して一覧を作成</button>
+        <button id="cancel" class="cancel" hidden>作成を中断</button>
+        <output id="status" aria-live="polite"></output>
+      </section>
+      <section id="product-section" hidden>
+        <p id="product-status" aria-live="polite">検索しています…</p>
+        <article id="counterpart-card" class="counterpart-card" hidden>
+          <img id="counterpart-image" alt="">
+          <strong id="counterpart-title"></strong>
+        </article>
+        <button id="open-product" hidden>商品ページへ</button>
+        <button id="add-favorite" hidden>ウィッシュリストに追加</button>
+      </section>
+      <p id="unsupported" hidden><span id="unsupported-line-1">Nintendo Store、</span><br><span id="unsupported-line-2">または Steamのページで</span><br><span id="unsupported-line-3">起動してください</span></p>
+      <section id="language-section" class="language-section" hidden>
+        <label for="language-select" id="language-label">表示言語</label>
+        <select id="language-select">
+          <option value="auto">ブラウザーの設定</option>
+          <option value="ja">日本語</option>
+          <option value="en">English</option>
+        </select>
+      </section>
+    </main>
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>
