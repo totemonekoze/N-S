@@ -1,0 +1,35 @@
+﻿{
+  "titleAliases": [
+    ["The Colonists", "ザ・コロニスト"]
+  ],
+  "englishToKatakana": {
+    "rust": "ラスト",
+    "dead": "デッド",
+    "cells": "セルズ",
+    "outer": "アウター",
+    "wilds": "ワイルズ",
+    "human": "ヒューマン",
+    "fall": "フォール",
+    "flat": "フラット",
+    "little": "リトル",
+    "nightmares": "ナイトメアズ",
+    "monster": "モンスター",
+    "hunter": "ハンター",
+    "rise": "ライズ",
+    "hot": "ホット",
+    "wheels": "ホイールズ",
+    "unleashed": "アンリーシュド",
+    "turbocharged": "ターボチャージド",
+    "cuphead": "カップヘッド",
+    "stars": "スターズ",
+    "time": "タイム",
+    "content": "コンテント",
+    "warning": "ワーニング",
+    "the": "ザ",
+    "and": "アンド",
+    "of": "オブ",
+    "in": "イン",
+    "on": "オン",
+    "to": "トゥ"
+  }
+}

@@ -1,4 +1,5 @@
 import './search-rules.js';
+import SEARCH_PATTERNS from './search-patterns.json' with { type: 'json' };
 import { getUiLanguage, translate } from './i18n.js';
 
 const NINTENDO_ORIGIN = 'https://store-jp.nintendo.com';
@@ -12,14 +13,7 @@ const TITLE_VARIANT_CACHE_LIMIT = 1000;
 
 const SEARCH_RULES = globalThis.SS_SEARCH_RULES;
 
-// Nintendo Store の日本語表記が Steam の英語表記とまったく異なる作品の別名。
-// タイトルを追加する場合は、キーを英語タイトル、値をNintendo Storeでの表記にする。
-const NINTENDO_TITLE_ALIASES = new Map([
-  ['the colonists', ['ザ・コロニスト']]
-]);
-const STEAM_TITLE_ALIASES = new Map([
-  ['ザ コロニスト', ['The Colonists']]
-]);
+const ENGLISH_KATAKANA_WORDS = new Map(Object.entries(SEARCH_PATTERNS.englishToKatakana || {}));
 
 const NINTENDO_TO_STEAM_PRODUCT_ALIASES = new Map([
   ['D70010000056430', { steamAppId: '1562700', title: 'SANABI', steamUrl: 'https://store.steampowered.com/app/1562700/SANABI/' }],
@@ -537,10 +531,26 @@ function mergeSteamCandidates(...candidateLists) {
   const found = new Map();
   for (const candidate of candidateLists.flat()) {
     const key = candidate.steamAppId || candidate.url;
-    if (!key || found.has(key)) continue;
-    found.set(key, candidate);
+    if (!key) continue;
+    const existing = found.get(key);
+    found.set(key, existing ? mergeSteamCandidate(existing, candidate) : candidate);
   }
   return [...found.values()].map((candidate, rank) => ({ ...candidate, rank }));
+}
+
+function mergeSteamCandidate(existing, incoming) {
+  const existingSlug = steamTitleFromUrl(existing.url);
+  const incomingSlug = steamTitleFromUrl(incoming.url);
+  const preferredUrl = incomingSlug && !existingSlug ? incoming.url : existing.url || incoming.url;
+  return {
+    ...existing,
+    ...incoming,
+    url: preferredUrl,
+    searchKey: incoming.searchKey || existing.searchKey || steamTitleFromUrl(preferredUrl),
+    image: existing.image || incoming.image,
+    price: existing.price || incoming.price,
+    type: existing.type || incoming.type
+  };
 }
 
 async function isSteamProductExcluded(candidate, job) {
@@ -616,7 +626,7 @@ function createSteamSearchPlans(game) {
     plans.push({ query: cleanQuery, requiredSubtitle: '', minimumScore: 70, allowTopResult: true, phonetic, exactEnglishWord });
   };
   // Steam固有: 日本語題名をローマ字でも補助検索する。
-  for (const alias of STEAM_TITLE_ALIASES.get(normaliseTitle(searchTitle)) || []) addPlan(alias);
+  for (const alias of sharedTitleAliases(searchTitle)) addPlan(alias);
   for (const romanised of kanaSearchVariants(searchTitle)) addPlan(romanised, { phonetic: true });
   for (const romanised of katakanaTitleSearchVariants(searchTitle)) addPlan(romanised, { phonetic: true });
   for (const reading of readings) addPlan(reading, { phonetic: true });
@@ -776,7 +786,7 @@ function createSearchPlans(game) {
     plans.push({ query: cleanQuery, requiredSubtitle: '', minimumScore, allowTopResult: true, phonetic, exactEnglishWord });
   };
   // Nintendo Store固有: 英題をカタカナ読みでも補助検索する。
-  for (const alias of NINTENDO_TITLE_ALIASES.get(normaliseTitle(searchTitle)) || []) addPlan(alias, { minimumScore: 90 });
+  for (const alias of sharedTitleAliases(searchTitle)) addPlan(alias, { minimumScore: 90 });
   for (const kanaTitle of englishKatakanaSearchVariants(searchTitle)) addPlan(kanaTitle, { phonetic: true });
   for (const reading of readings) addPlan(reading, { phonetic: true });
   return plans;
@@ -808,6 +818,17 @@ function createSharedTitleSearchPlans(game) {
   const colonSplit = searchTitle.match(/^(.+?)[：:]\s*(.+)$/);
   if (colonSplit) addPlan(colonSplit[1], { requiredSubtitle: colonSplit[2], minimumScore: 80, allowTopResult: false });
   return { searchTitle, exactEnglishWord, plans, readings: extractExplicitTitleReadings(searchTitle) };
+}
+
+function sharedTitleAliases(title) {
+  const titleKey = normaliseTitle(title);
+  for (const aliases of SEARCH_PATTERNS.titleAliases || []) {
+    const values = Array.isArray(aliases) ? aliases : [];
+    if (values.some((value) => normaliseTitle(value) === titleKey)) {
+      return values.filter((value) => normaliseTitle(value) !== titleKey);
+    }
+  }
+  return [];
 }
 
 function createNintendoSearchUrl(query) {
@@ -1101,14 +1122,6 @@ function katakanaTitleSearchVariants(value) {
 
 // 英題の読みをNintendo Storeで再検索するための、一般的なゲーム名で使われる語の発音表記。
 // この検索は通常検索が0件だった場合にだけ使うため、表記ゆれの補助に限定される。
-const ENGLISH_KATAKANA_WORDS = new Map([
-  ['rust', 'ラスト'], ['dead', 'デッド'], ['cells', 'セルズ'], ['outer', 'アウター'], ['wilds', 'ワイルズ'],
-  ['human', 'ヒューマン'], ['fall', 'フォール'], ['flat', 'フラット'], ['little', 'リトル'], ['nightmares', 'ナイトメアズ'],
-  ['monster', 'モンスター'], ['hunter', 'ハンター'], ['rise', 'ライズ'], ['hot', 'ホット'], ['wheels', 'ホイールズ'],
-  ['unleashed', 'アンリーシュド'], ['turbocharged', 'ターボチャージド'], ['cuphead', 'カップヘッド'], ['stars', 'スターズ'],
-  ['time', 'タイム'], ['content', 'コンテント'], ['warning', 'ワーニング'], ['the', 'ザ'], ['and', 'アンド'],
-  ['of', 'オブ'], ['in', 'イン'], ['on', 'オン'], ['to', 'トゥ']
-]);
 
 function englishWordsFromKatakana(value) {
   const compact = String(value || '')
