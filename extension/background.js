@@ -1,5 +1,4 @@
 import './search-rules.js';
-import SEARCH_PATTERNS from './search-patterns.json' with { type: 'json' };
 import { getUiLanguage, translate } from './i18n.js';
 
 const NINTENDO_ORIGIN = 'https://store-jp.nintendo.com';
@@ -13,7 +12,26 @@ const TITLE_VARIANT_CACHE_LIMIT = 1000;
 
 const SEARCH_RULES = globalThis.SS_SEARCH_RULES;
 
-const ENGLISH_KATAKANA_WORDS = new Map(Object.entries(SEARCH_PATTERNS.englishToKatakana || {}));
+
+const SEARCH_PATTERNS = { titleAliases: [], englishToKatakana: {} };
+const ENGLISH_KATAKANA_WORDS = new Map();
+const searchPatternsReady = loadSearchPatterns();
+
+async function loadSearchPatterns() {
+  try {
+    const response = await fetch(chrome.runtime.getURL('search-patterns.json'));
+    if (!response.ok) throw new Error('検索パターンを読み込めませんでした。');
+    const patterns = await response.json();
+    SEARCH_PATTERNS.titleAliases = Array.isArray(patterns?.titleAliases) ? patterns.titleAliases : [];
+    SEARCH_PATTERNS.englishToKatakana = patterns?.englishToKatakana || {};
+    ENGLISH_KATAKANA_WORDS.clear();
+    for (const [english, reading] of Object.entries(SEARCH_PATTERNS.englishToKatakana)) {
+      ENGLISH_KATAKANA_WORDS.set(english, reading);
+    }
+  } catch (error) {
+    console.warn('S:S: search patterns could not be loaded.', error);
+  }
+}
 
 const NINTENDO_TO_STEAM_PRODUCT_ALIASES = new Map([
   ['D70010000056430', { steamAppId: '1562700', title: 'SANABI', steamUrl: 'https://store.steampowered.com/app/1562700/SANABI/' }],
@@ -61,6 +79,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     };
     activeBuild = job;
     createProgressTab(job)
+      .then(() => searchPatternsReady)
       .then(() => job.lazyWorkers ? undefined : createWorkerPool(job))
       .then(() => buildList(message.games, job))
       .catch((error) => sendBuildProgress({ state: 'cancelled', text: compactErrorMessage(error, '処理に失敗しました'), fallbackKey: 'startFailed' }))
@@ -259,6 +278,7 @@ async function withStoreActionWorker(work) {
 
 async function lookupCounterpartProduct(message) {
   const sourceUrl = String(message.sourceUrl || '');
+  await searchPatternsReady;
   return withDedicatedWorker(async (job) => {
     if (message.direction === 'steam-to-nintendo') {
       if (!sourceUrl.startsWith('https://store.steampowered.com/app/')) throw new Error('Steamの商品ページを取得できませんでした。');
@@ -335,24 +355,25 @@ function releaseWorker(job, worker) {
 async function buildList(games, job) {
   if (job.direction === 'nintendo-to-steam') return buildNintendoToSteamList(games, job);
   // Wishlist.js returns only games with a title, so no preliminary Steam product-page pass is needed.
-  const nintendoResults = await mapWithConcurrency(games, SEARCH_CONCURRENCY, async (game) => {
+  const results = await mapWithConcurrency(games, SEARCH_CONCURRENCY, async (game) => {
+    let result;
     try {
-      return { ...game, ...(await findNintendoProduct(game, job)) };
+      result = { ...game, ...(await findNintendoProduct(game, job)) };
     } catch (error) {
-      return {
+      result = {
         ...game,
         searchUrl: createNintendoSearchUrl(game.title),
         error: compactErrorMessage(error, '見つかりませんでした')
       };
+    }
+    try {
+      return await enrichStoreDetails(result, job);
     } finally {
       job.completed += 1;
       sendBuildProgress({ key: 'searchingNintendo', values: { completed: job.completed, total: job.total } });
     }
   }, () => job.cancelled);
 
-  if (job.cancelled) return finishCancelled();
-
-  const results = await mapWithConcurrency(nintendoResults, SEARCH_CONCURRENCY, (result) => enrichStoreDetails(result, job), () => job.cancelled);
   if (job.cancelled) return finishCancelled();
 
   await publishResults(job, results, 'steam-to-nintendo');
@@ -366,23 +387,24 @@ async function buildNintendoToSteamList(initialGames, job) {
   if (job.cancelled) return finishCancelled();
   if (!games.length) throw new Error('Nintendo Storeのお気に入りを取得できませんでした。');
 
-  const steamResults = await mapWithConcurrency(games, SEARCH_CONCURRENCY, async (game) => {
+  const results = await mapWithConcurrency(games, SEARCH_CONCURRENCY, async (game) => {
+    let result;
     try {
-      return { ...game, ...(await findSteamProductWithSourceFallback(game, job)) };
+      result = { ...game, ...(await findSteamProductWithSourceFallback(game, job)) };
     } catch (error) {
-      return {
+      result = {
         ...game,
         searchUrl: createSteamSearchUrl(game.title),
         error: compactErrorMessage(error, '見つかりませんでした')
       };
+    }
+    try {
+      return await enrichStoreDetails(result, job);
     } finally {
       job.completed += 1;
       sendBuildProgress({ key: 'searchingSteam', values: { completed: job.completed, total: job.total } });
     }
   }, () => job.cancelled);
-  if (job.cancelled) return finishCancelled();
-
-  const results = await mapWithConcurrency(steamResults, SEARCH_CONCURRENCY, (result) => enrichStoreDetails(result, job), () => job.cancelled);
   if (job.cancelled) return finishCancelled();
 
   await publishResults(job, results, 'nintendo-to-steam');

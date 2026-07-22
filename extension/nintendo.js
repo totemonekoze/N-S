@@ -119,6 +119,7 @@ async function findCandidates() {
 
 async function waitForCandidates(timeoutMs) {
   const deadline = Date.now() + timeoutMs;
+  const queryKey = normaliseNintendoSearchTitle(new URL(location.href).searchParams.get('q') || '');
   let best = [];
   let previousSignature = '';
   let stableCount = 0;
@@ -127,12 +128,22 @@ async function waitForCandidates(timeoutMs) {
     if (candidateCompleteness(candidates) >= candidateCompleteness(best)) best = candidates;
     const signature = candidates.map((item) => `${item.url}|${item.title}|${item.image}|${item.price}`).join('\n');
     stableCount = signature && signature === previousSignature ? stableCount + 1 : 0;
+    const hasExactTitle = queryKey && candidates.some((item) => normaliseNintendoSearchTitle(item.title) === queryKey);
     const complete = candidates.length && candidates.every((item) => item.title && item.image && item.price);
-    if ((complete && stableCount >= 2) || (candidates.length && stableCount >= 8)) return candidates;
+    if ((hasExactTitle && stableCount >= 1) || (complete && stableCount >= 2) || (candidates.length && stableCount >= 8)) return candidates;
     previousSignature = signature;
     await new Promise((resolve) => setTimeout(resolve, 140));
   }
   return best;
+}
+
+function normaliseNintendoSearchTitle(value) {
+  return String(value || '')
+    .toLocaleLowerCase('ja-JP')
+    .normalize('NFKC')
+    .replace(/[^\p{L}\p{N}]+/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
 function candidateCompleteness(candidates) {

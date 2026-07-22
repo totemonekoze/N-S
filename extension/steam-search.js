@@ -19,7 +19,8 @@ async function readSteamSearch() {
     if (steamCandidateCompleteness(candidates) >= steamCandidateCompleteness(best)) best = candidates;
     const signature = candidates.map((candidate) => `${candidate.steamAppId}|${candidate.title}`).join('\n');
     stableCount = signature && signature === previousSignature ? stableCount + 1 : 0;
-    const hasExactTitle = queryKey && candidates.some((candidate) => normaliseSteamSearchTitle(candidate.title) === queryKey);
+    const hasExactTitle = queryKey && candidates.some((candidate) => [candidate.title, candidate.searchKey]
+      .some((value) => normaliseSteamSearchTitle(value) === queryKey));
     // Steam検索は結果行を段階的に描画する。先頭のDLCだけで確定せず、本体行まで待つ。
     if (candidates.length && ((hasExactTitle && stableCount >= 1) || (Date.now() - startedAt >= 900 && stableCount >= 3))) {
       return { candidates };
